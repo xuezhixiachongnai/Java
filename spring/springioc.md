@@ -236,5 +236,3 @@ private UserService userService;
 > | `application` | ServletContext 范围内单例，所有请求共享 |
 > | `websocket`   | 每个 WebSocket 会话创建一个 Bean        |
 
-## 深入分析 IoC
-
