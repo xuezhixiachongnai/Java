@@ -875,22 +875,14 @@ class User {
 
 MyBatis 有 **两级缓存**：
 
-| 缓存级别 | 存储范围               | 生命周期                             | 使用对象           |
-| -------- | ---------------------- | ------------------------------------ | ------------------ |
-| 一级缓存 | SqlSession（会话级）   | 与 SqlSession 同生命周期             | 默认开启，无需配置 |
-| 二级缓存 | Mapper（namespace 级） | Mapper 对应的 Configuration 生命周期 | 默认关闭，需要配置 |
-
-- **一级缓存**：同一个 SqlSession 内查询的相同 SQL、相同参数会从缓存取结果
-- **二级缓存**：跨 SqlSession，也就是多个 SqlSession 共享缓存
-
-二级缓存概念
-
-- **缓存级别**：Mapper Namespace
-- **存储位置**：`Cache` 接口的实现（默认是 PerpetualCache + LRU 策略）
-- **数据来源**：
-  - 查询操作返回的结果会被放入二级缓存
-  - 更新/插入/删除操作会清空相关缓存（默认清空 Mapper 对应 namespace 的缓存）
-- **作用**：减少数据库访问，提高性能，跨会话共享查询结果
+- 一级缓存
+  - MyBatis 一级缓存的生命周期和 SqlSession 一致。
+  - MyBatis 一级缓存内部设计简单，只是一个没有容量限定的 HashMap，在缓存的功能性上有所欠缺。
+  - MyBatis的一级缓存最大范围是 SqlSession 内部，有多个 SqlSession 或者分布式的环境下，数据库写操作会引起脏数据，建议设定缓存级别为Statement。
+- 二级缓存
+  - MyBatis 的二级缓存相对于一级缓存来说，实现了`SqlSession`之间缓存数据的共享，同时粒度更加的细，能够`namespace`级别，通过 Cache 接口实现类不同的组合，对 Cache 的可控性也更强。
+  - MyBatis 在多表查询时，极大可能会出现脏数据，有设计上的缺陷，安全使用二级缓存的条件比较苛刻。
+  - 在分布式环境下，由于默认的 MyBatis Cache 实现都是基于本地的，分布式环境下必然会出现读取到脏数据，需要使用集中式缓存将 MyBatis 的 Cache 接口实现，有一定的开发成本，直接使用Redis、Memcached 等分布式缓存可能成本更低，安全
 
 使用二级缓存
 
@@ -940,24 +932,34 @@ Maven 依赖
 ```xml
 <dependencies>
     <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-context</artifactId>
+        <version>6.2.7</version>
+    </dependency>
+    <dependency>
         <groupId>org.mybatis</groupId>
         <artifactId>mybatis</artifactId>
-        <version>3.5.15</version>
+        <version>3.5.19</version>
     </dependency>
     <dependency>
         <groupId>org.mybatis</groupId>
         <artifactId>mybatis-spring</artifactId>
-        <version>2.2.2</version>
+        <version>3.0.5</version>
     </dependency>
     <dependency>
-        <groupId>mysql</groupId>
+        <groupId>com.mysql</groupId>
         <artifactId>mysql-connector-j</artifactId>
-        <version>8.1.0</version>
+        <version>9.1.0</version>
     </dependency>
     <dependency>
         <groupId>org.springframework</groupId>
         <artifactId>spring-jdbc</artifactId>
-        <version>5.3.30</version>
+        <version>6.2.7</version>
+    </dependency>
+    <dependency>
+        <groupId>com.alibaba</groupId>
+        <artifactId>druid</artifactId>
+        <version>1.2.24</version>
     </dependency>
 </dependencies>
 ```
@@ -996,30 +998,28 @@ public DataSourceTransactionManager transactionManager(DataSource dataSource) {
 - `DataSourceTransactionManager` 来自 `spring-jdbc`
 - 支持 Spring 的声明式事务 (`@Transactional`)
 
-1. **封装 JDBC 资源管理**
+2. **封装 JDBC 资源管理**
 
 - MyBatis 的 `SqlSessionFactoryBean` 内部会依赖 Spring 的 `DataSource`
 - Spring 自动管理连接释放、事务提交/回滚
 
 使用 spring 注解的方式配置 MyBatis
 
-使用 **`@Configuration` 注解类**
+`mybatis-config.xml`配置类由**`@Configuration` 配置类**代替
 
 ```java
 @Configuration
-@MapperScan("com.example.mapper") // 扫描 Mapper 接口
-@EnableTransactionManagement // 开启注解事务
-public class MyBatisConfig {
+@MapperScan("com.jh.mapper")
+public class MybatisConfig {
 
     @Bean
-    public DataSource dataSource() {
-        // 使用 HikariCP 也可以
-        BasicDataSource dataSource = new BasicDataSource();
-        dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
-        dataSource.setUrl("jdbc:mysql://localhost:3306/testdb?useSSL=false&serverTimezone=UTC");
-        dataSource.setUsername("root");
-        dataSource.setPassword("123456");
-        return dataSource;
+    public DataSource getDataSource() {
+        DruidDataSource ds = new DruidDataSource();
+        ds.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        ds.setUrl("jdbc:mysql://127.0.0.1:3306/db");
+        ds.setUsername("root");
+        ds.setPassword("Hanjie1012");
+        return ds;
     }
 
     @Bean
@@ -1036,7 +1036,7 @@ public class MyBatisConfig {
 }
 ```
 
-基础的 mybatis 是在`myabtis-config.xml`配置数据源和事务。在 spring 项目中，不但把这些配置使用注解配置，而且把`SqlSession`都交由 spring 容器管理，极大简化了配置方式和代码耦合度
+基础的 mybatis 是在`myabtis-config.xml`配置数据源和事务。在 spring 项目中，数据源、事务和`SqlSession`都交由 spring 容器管理，极大简化了配置方式和代码耦合度
 
 Mapper 接口使用注解
 
@@ -1044,34 +1044,39 @@ Mapper 接口使用注解
 @Mapper
 public interface UserMapper {
 
-    @Select("SELECT * FROM user WHERE id = #{id}")
-    User findById(@Param("id") int id);
+    @Select("select id, user_name userName, age from user")
+    List<User> findAll();
 
-    @Insert("INSERT INTO user(name, age) VALUES(#{name}, #{age})")
-    @Options(useGeneratedKeys = true, keyProperty = "id")
-    int insert(User user);
-
-    @Update("UPDATE user SET name=#{name}, age=#{age} WHERE id=#{id}")
-    int update(User user);
-
-    @Delete("DELETE FROM user WHERE id=#{id}")
-    int delete(@Param("id") int id);
+    @Select("select id, user_name userName, age from user where id = #{id}")
+    User findById(int id);
 }
 ```
 
-`@Mapper` 是 **MyBatis 提供的注解**，用于标记一个**接口是 Mapper 接口**
+**Spring 是如何判断一个接口是不是 mapper 接口，并生成代理对象的**
 
-Spring 扫描到带有 `@Mapper` 的接口后，会**为接口生成代理对象**（MapperProxy），并将其注册到 Spring 容器中
+两个核心注解：
 
-它的作用等价于原来 MyBatis XML 配置中的 `<mapper resource="mapper/UserMapper.xml"/>`
+**`@MaperScan`** 用于扫描指定包下的接口，并对标记了 `@Mapper` 或者没有标记的接口生成 **MapperFactoryBean**，然后注册到 Spring 容器
 
-spring 中，无需显示的调用管理 SqlSessin，执行 SQL 时由 MyBatis-Spring 自动获取、关闭 SqlSession
+它内部用到的核心类是：
 
-使用 `@Mapper` 后，可以配合 `@MapperScan("包路径")` 自动扫描整个包的 Mapper 接口
+- **`ClassPathMapperScanner`**（继承 `ClassPathBeanDefinitionScanner`）
+- 这个类会扫描指定包下的所有类，会进行以下逻辑：
+  1. 判断这个类是不是接口。
+  2. 判断是否有 `@Mapper` 注解，或者（根据配置）无条件当作 Mapper 接口处理。
+  3. 把这个接口注册成一个 `BeanDefinition`，Bean 类型不是接口本身，而是 **`MapperFactoryBean`**
 
-> 这两者可以单独使用，一起使用效果更好
+`@Mapper` 是 MyBatis 提供的注解，用于标记一个接口是 Mapper 接口
 
-`@MapperScan` 是 MyBatis-Spring 提供的扫描器，它的作用是扫描指定包下的接口，**为每个接口生成 MapperProxy 代理对象**并注册到 Spring 容器中，相当于给接口打上了 `@Component` 效果。
+要知道`@Mapper`只是一个 **标记注解**，用来帮助 `MapperScanner` 判断哪些接口是 Mapper。在**默认配置下**，`@MapperScan` 会把所有接口都当成 Mapper 处理，所以 `@Mapper` **可加可不加**。
+
+但是在 spring 环境中，`MapperScan`是必须的，它会触发 **包扫描**，找到所有符合条件的接口，并为它们注册一个 **`MapperFactoryBean`**。没有 `@MapperScan`，Spring 容器里根本不会有 Mapper 的 Bean，自然也就无法注入
+
+**具体过程**：Spring 扫描指定包下的接口，为每个接口生成一个 **`MapperFactoryBean<T>`**，并将其注册到 Spring 容器中。当我们注入 Mapper 的时候，`MapperFactoryBean`会在内部调用 MyBatis 的 `SqlSession.getMapper(MapperInterface.class)` 方法，生成接口的代理对象（`MapperProxy`）并返回 `MapperProxy`。所以从容器中拿到的 Mapper 实际上是一个 JDK 动态代理对象。
+
+在 spring 中，我们无需显示的调用管理 SqlSessin，在执行 SQL 时由 MyBatis-Spring 自动获取、关闭 SqlSession
+
+综上所述：**Spring 容器里注册的是 `MapperFactoryBean`，真正代理逻辑是 MyBatis 的 `MapperProxy`**
 
 `@Select()`是使用注解的方式来实现简单的 sql 查询，之前的`mapper.xml`方式仍保留，且不做变化，适用于复杂 sql
 
@@ -1085,8 +1090,8 @@ public class UserService {
     private UserMapper userMapper;
 
     @Transactional
-    public User getUser(int id) {
-        return userMapper.findById(id);
+    public List<User> findAll() {
+        return userMapper.findAll();
     }
 }
 ```
@@ -1114,26 +1119,75 @@ Spring 的声明式事务底层依赖 **AOP（代理）机制**：
    - 方法正常返回 → 提交事务
    - 方法抛异常 → 回滚事务
 
+最后调用
+
+```java
+@Configuration
+@ComponentScan("com.jh")
+@Import(MybatisConfig.class)
+public class App {
+    public static void main(String[] args) {
+        ApplicationContext context = new AnnotationConfigApplicationContext(App.class);
+        UserService userService = (UserService) context.getBean("userService");
+        List<User> users = userService.findAll();
+        for (User user : users) {
+            System.out.println(user);
+        }
+    }
+}
+```
+
+我们的`App`类导入了`MyBatisConfig`配置，所以也加上`@Configuration`，表示这是一个配置类入口。但是也可以不加。`@Configuration` 的作用是：告诉 Spring 这是一个 **配置类**，里面可能会有 `@Bean`、`@ComponentScan`、`@Import` 等注解。并没有其他作用。
+
+`AnnotationConfigApplicationContext` 是 Spring 提供的一个容器实现，它主要用来加载 **基于注解的配置类**，区别于：
+
+- `ClassPathXmlApplicationContext` → 加载 XML 配置
+- `FileSystemXmlApplicationContext` → 加载磁盘路径下的 XML
+- `AnnotationConfigApplicationContext` → 加载 `@Configuration`、`@ComponentScan`、`@Import` 等注解驱动的配置
+
+当执行以下代码时
+
+```java
+ApplicationContext context = new AnnotationConfigApplicationContext(App.class);
+```
+
+它会做几件事：
+
+1. 把 `App.class` 当作一个配置类解析。
+2. 因为 `App` 上有 `@Import(MybatisConfig.class)`，所以会再加载 `MybatisConfig`。
+3. `MybatisConfig` 里定义了 DataSource、SqlSessionFactory、事务管理器。
+4. `@MapperScan("com.jh.mapper")` 会扫描 Mapper 接口并注册到 Spring 容器。
+5. 最终容器里会有一个 `UserMapper` 代理对象，所以 `context.getBean(UserMapper.class)` 可以成功。
+
+所以该类的作用是加载一个配置类，将该类所配置的 Bean 都注册到 Spring IoC 容器中。
+
 ## Spring Boot 项目中配置 MyBatis
 
-Maven 依赖
+接下来我们在spring boot 中配置以下 MyBatis
 
-Spring Boot 提供了 **starter**，大大简化依赖配置：
+首先看一下 Maven 依赖
 
 ```xml
 <dependencies>
-    <!-- Spring Boot MyBatis starter -->
     <dependency>
         <groupId>org.mybatis.spring.boot</groupId>
         <artifactId>mybatis-spring-boot-starter</artifactId>
-        <version>3.0.2</version>
+        <version>3.0.5</version>
     </dependency>
-
-    <!-- MySQL 驱动 -->
     <dependency>
-        <groupId>mysql</groupId>
+        <groupId>com.mysql</groupId>
         <artifactId>mysql-connector-j</artifactId>
-        <version>8.1.0</version>
+        <version>9.1.0</version>
+    </dependency>
+    <dependency>
+        <groupId>com.alibaba</groupId>
+        <artifactId>druid</artifactId>
+        <version>1.2.24</version>
+    </dependency>
+    <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>2.0.17</version>
     </dependency>
 </dependencies>
 ```
@@ -1153,34 +1207,19 @@ Spring Boot 推荐使用 **application.properties** 或 **application.yml**：
 ```yaml
 spring:
   datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/db
     username: root
-    password: 123456
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    # 可选：连接池配置（HikariCP 默认）
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 30000
-      pool-name: HikariCP
-
+    password: Hanjie1012
+    type: com.alibaba.druid.pool.DruidDataSource
+    
 mybatis:
-  type-aliases-package: com.example.entity   # 实体类包
-  mapper-locations: classpath*:mapper/*.xml  # XML Mapper 文件位置
-  configuration:
-    map-underscore-to-camel-case: true       # 下划线转驼峰
-    cache-enabled: true                       # 启用二级缓存
-    lazy-loading-enabled: false               # 延迟加载
-    aggressive-lazy-loading: false
-    multiple-result-sets-enabled: true
-    use-generated-keys: true
-    default-executor-type: SIMPLE
-
-# 可选：日志配置
-logging:
-  level:
-    com.example.mapper: debug
+  type-aliases-package: com.example.entity
 ```
+
+上面配置了数据库连接池的参数
+
+mybatis 的一些参数
 
 Mapper 接口仍然使用 @Mapper 注解方式
 
@@ -1197,28 +1236,592 @@ Spring Boot 与纯 Spring 项目相比，简化点主要有：
 
 ```java
 @SpringBootApplication
-@MapperScan("com.example.mapper")
-public class AppBootApplication {
+public class App {
+
     public static void main(String[] args) {
-        SpringApplication.run(AppBootApplication.class, args);
+        ApplicationContext context = SpringApplication.run(App.class, args);
+        UserService userService = context.getBean(UserService.class);
+        userService.findAll().forEach(System.out::println);
     }
 }
 ```
 
-Service 层：
+我们可以看到，项目中并没有显示的注明`@MapperScan`，只是给 Mapper 接口标注上了`@Mapper`注解，spring boot 却成功的注册了 Mapper，这是因为**`mybatis-spring-boot-starter` 做了自动配置**。
+
+`mybatis-spring-boot-starter`内部带了一个**自动配置类**：`org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration`
+
+它的作用是：
+
+检测工程里有 **`@Mapper` 接口**，就会自动注册`MapperScannerConfigurer`类，然后扫描并注册这些接口
+
+所以即使没写 `@MapperScan`，Spring Boot 也能识别 `Mapper`。
+
+`MapperScannerConfigurer` 是 **MyBatis-Spring 提供的一个 BeanDefinition 注册器**。
+ 类全名：
 
 ```java
+org.mybatis.spring.mapper.MapperScannerConfigurer
+```
+
+它的核心任务就是：
+
+- 扫描指定包路径下的接口
+- 识别出 **Mapper 接口**
+- 为这些接口生成对应的 **MapperFactoryBean**
+- 注册到 Spring 容器里，这样就能通过 `@Autowired` 或 `getBean()` 拿到 Mapper 代理对象了
+
+**@MapperScan** 就是自动注册该类
+
+## MyBatis-Plus
+
+MyBatis-Plus 是基于 MyBatis 框架的一个增强工具，主要目的是简化 MyBatis 的开发过程，提供更加简洁、方便的 CRUD 操作。它是在保留 MyBatis 强大功能的基础上，通过封装和优化一些常见操作来提高开发效率。
+
+MyBatis-Plus 提供了许多开箱即用的功能，包括自动 CRUD 代码生成、分页查询、性能优化、以及支持多种数据库。与 MyBatis 相比，MyBatis-Plus 的 部分 核心特性包括：
+
+1. **无侵入设计**：不会改变 MyBatis 原有的 API 和使用方式，可以自由选择 MyBatis 和 MyBatis-Plus 的功能。
+2. **自动 CRUD**：通过 `BaseMapper` 和 `ServiceImpl` 接口，MyBatis-Plus 提供了一系列 CRUD 操作的方法，如 `insert`、`delete`、`update` 和 `select`，减少了重复的 SQL 编写工作。
+3. **条件构造器**：MyBatis-Plus 提供了条件构造器（如 `QueryWrapper`），可以通过链式编程方式轻松构建复杂的查询条件。
+
+现在我们来通过一个小 demo 来学习一下
+
+创建一个 maven 项目
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>com.baomidou</groupId>
+        <artifactId>mybatis-plus-boot-starter</artifactId>
+        <version>3.5.12</version>
+    </dependency>
+    <dependency>
+        <groupId>com.mysql</groupId>
+        <artifactId>mysql-connector-j</artifactId>
+        <version>9.1.0</version>
+    </dependency>
+    <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <version>1.18.34</version>
+    </dependency>
+</dependencies>
+```
+
+这里我们只和 spring boot 集成
+
+我们引入的依赖有
+
+**`mybatis-plus-boot-starter`**：是 **MyBatis-Plus 官方提供的 Spring Boot Starter**，用于**在 Spring Boot 中零配置集成 MyBatis-Plus**。
+
+在 Maven 里，它本质上是一个聚合依赖，内部包含了几个核心包：
+
+- `mybatis-plus-core`
+   MP 的核心功能（CRUD 封装、Wrapper 条件构造器、分页插件等）
+- `mybatis-plus-extension`
+   MP 的增强功能（自动填充、乐观锁、多租户、代码生成器）
+- `mybatis-spring-boot-starter`（MyBatis 官方的）
+   负责 Spring Boot 和 MyBatis 的基础整合（数据源、事务、Mapper 扫描）
+
+所以只要加上一个 `mybatis-plus-boot-starter`，MyBatis 和 MyBatis-Plus 都能用
+
+我们在使用 **MyBatis**，需要自己配置这些东西：
+
+- `DataSource`（数据源）
+- `SqlSessionFactory`
+- `SqlSessionTemplate`
+- `MapperScan`
+
+但是引入 **`mybatis-plus-boot-starter`** 后：
+
+- Spring Boot 自动读取 `application.yml` 的数据源配置
+- 自动创建 **Druid/Hikari 数据源**
+- 自动生成 **SqlSessionFactory**
+- 自动扫描 `Mapper` 接口（不用写 `@MapperScan` 也行）
+- 自动装配 MyBatis-Plus 的增强功能（分页插件、逻辑删除、Wrapper 查询等）
+
+**`lombok`** 是一个 **Java 编译时期的工具库**，通过注解（Annotation）来**自动生成样板代码**，比如 getter/setter、构造方法、toString、equals、hashCode、日志对象等。
+
+它的目标就是**减少冗余代码，让类更简洁**。
+
+**常见注解及作用**
+
+数据类相关
+
+- `@Getter` / `@Setter`
+   自动生成 getter/setter 方法
+- `@Data`
+   相当于 `@Getter + @Setter + @ToString + @EqualsAndHashCode + @RequiredArgsConstructor`
+- `@ToString`
+   自动生成 `toString()` 方法
+- `@EqualsAndHashCode`
+   自动生成 `equals()` 和 `hashCode()`
+- `@AllArgsConstructor` / `@NoArgsConstructor` / `@RequiredArgsConstructor`
+   自动生成构造方法
+
+ Builder 模式
+
+- `@Builder`
+   让对象可以用链式的 **Builder 模式** 构造
+
+  ```java
+  User user = User.builder()
+                  .name("Alice")
+                  .age(18)
+                  .build();
+  ```
+
+日志
+
+- `@Slf4j`
+   会自动注入一个 `private static final Logger log = LoggerFactory.getLogger(类名.class)`
+
+  ```java
+  @Slf4j
+  public class Test {
+      public void run() {
+          log.info("运行成功！");
+      }
+  }
+  ```
+
+了解完依赖后，简单配置一下数据源
+
+```yaml
+spring:
+  datasource:
+    type: com.zaxxer.hikari.HikariDataSource
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/db
+    username: root
+    password: Hanjie1012
+```
+
+我们在上述依赖中并没有注入 `hikari`，为什么这里可以使用呢，因为 spring boot 内置默认的数据源就是它
+接下来看一下 entity 实例
+
+```java
+@Data
+@TableName("user")
+public class User {
+
+    @TableId
+    private int id;
+
+    @TableField("user_name")
+    private String name;
+
+    @TableField("age")
+    private int age;
+}
+```
+
+`@Data` 是 lombok 注解，不管，但是出现了一些其他注解，在原生的 mybatis 中可没有。
+
+**这些注解是 mybatis-plus 定义的字段映射注解**，用来解决 mybatis-plus 的 **java 实例和数据库表的映射关系**
+
+MyBatis-Plus 的映射关系依赖两个核心原则：
+
+1. **表名与类名的映射**
+   - 默认规则：`UserInfo` → `user_info`（驼峰转下划线，全部小写）
+   - 可通过注解 `@TableName` 显式指定表名
+2. **字段与列名的映射**
+   - 默认规则：Java 字段 `userName` → 数据库列 `user_name`
+   - 可通过注解 `@TableField("user_name")` 显式指定
+   - 主键必须用 `@TableId` 注解
+
+> 注意：**驼峰映射需开启 `map-underscore-to-camel-case: true`**，否则默认不映射。
+
+注解使用
+
+表名映射
+
+```java
+@TableName("user_table")
+public class User {
+    ...
+}
+```
+
+- 指定数据库表名为 `user_table`
+- 如果类名和表名一致且遵循驼峰规则，可省略
+
+主键映射
+
+```java
+@TableId(value = "id", type = IdType.AUTO)
+private Long id;
+```
+
+- `value`：对应列名
+- `type`：主键策略（AUTO、自增、UUID 等）
+  - `IdType.AUTO`：数据库自动生成（通常是自增长 ID）。
+  - `IdType.INPUT`：用户输入 ID（即需要手动设置）。
+  - `IdType.ASSIGN_ID`：由 MyBatis-Plus 生成的 ID（通常是 UUID）。
+  - `IdType.ASSIGN_UUID`：生成 UUID（字符串类型的唯一 ID）。
+
+字段映射
+
+```java
+@TableField("user_name")
+private String userName; // 对应列 user_name
+```
+
+忽略字段
+
+```java
+@TableField(exist = false)
+private String temp; // 不对应数据库列
+```
+
+配置自动映射驼峰命名
+
+配置方式：
+
+```yaml
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+```
+
+效果：
+
+- `user_name` → `userName`
+- `create_time` → `createTime`
+- **不需要显式 `@TableField` 注解**，除非列名特殊
+
+数据类型映射
+
+MP 会根据 **Java 类型 SQL 类型** 自动映射：
+
+| Java 类型           | SQL 类型            |
+| ------------------- | ------------------- |
+| `String`            | VARCHAR, TEXT       |
+| `Integer` / `int`   | INT                 |
+| `Long` / `long`     | BIGINT              |
+| `Double` / `double` | DOUBLE, DECIMAL     |
+| `BigDecimal`        | DECIMAL             |
+| `LocalDateTime`     | DATETIME, TIMESTAMP |
+| `Date`              | DATE, DATETIME      |
+
+> MP 内部通过 TypeHandler 处理类型转换，如果类型特殊，可以自定义 TypeHandler。
+
+高级特性
+
+1. **逻辑删除**
+
+```java
+@TableLogic
+private Integer deleted; // 对应数据库的 deleted 列
+```
+
+> 逻辑删除并不是把数据库中的记录真正删除掉，而是**在数据库中增加一个标识字段**，记录该条数据是否被“删除”。
+>
+> - **物理删除（Physical Delete）**：`DELETE FROM user WHERE id=1;` → 数据真正被删除
+> - **逻辑删除（Logical Delete）**：`UPDATE user SET deleted=1 WHERE id=1;` → 数据仍存在，只是标记为已删除
+>
+> 逻辑删除的好处：
+>
+> - 保留历史数据
+> - 便于数据恢复
+> - 避免外键约束问题
+>
+> MP 提供 **`@TableLogic` 注解** 来实现逻辑删除。
+>
+> 数据库表设计
+>
+> ```sql
+> CREATE TABLE user (
+>     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+>     name VARCHAR(50),
+>     age INT,
+>     deleted INT DEFAULT 0
+> );
+> ```
+>
+> - `deleted = 0` 表示未删除
+> - `deleted = 1` 表示已删除
+
+2. **自动填充**
+
+```java
+@TableField(fill = FieldFill.INSERT)
+private LocalDateTime createTime;
+
+@TableField(fill = FieldFill.INSERT_UPDATE)
+private LocalDateTime updateTime;
+```
+
+- 插入或更新时自动填充时间
+
+3. **乐观锁**
+
+```java
+@Version
+private Integer version;
+```
+
+- 更新时自动检查版本字段
+
+再来看一下 mapper 接口
+
+```java
+@Mapper
+public interface UserMapper extends BaseMapper<User> {
+}
+```
+
+mapper 接口实现了一个`BaseMapper<T>`类，但是却没有实现一些基本的 CRUD 方法。查看这个类可以发现，这里面已经帮我们实现了很多基本的 CRUD 的操作，无需我们自己去写。
+
+`BaseMapper` 是 MyBatis-Plus 提供的一个基础 Mapper 接口，它简化了数据访问层（Data Access Layer）的开发。`BaseMapper` 提供了一系列通用的数据库操作方法，这样就不必手动编写常见的 SQL 语句，从而提升了开发效率。
+
+然后再看一下 service 层
+
+```java
+package com.jh.service;
+
+public interface UserService extends IService<User> {
+}
+
+```
+
+```java
+package com.jh.service.impl;
+
 @Service
-public class UserService {
+public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
+}
+```
 
-    @Autowired
-    private UserMapper userMapper;
+我们在 service 层下面实现了一个 Service 接口，又在 service.impl 下面继承了该接口，实现了一个 UserServiceImpl 类。
 
-    @Transactional
-    public User getUser(int id) {
-        return userMapper.findById(id);
+UserService 是实现了 `Iservice<T>`接口
+
+UserService  的实现类 UserServiceImpl 实现了 `ServiceImpl` 类。
+
+`ServiceImpl` 和 `IService` 是 MyBatis-Plus 中用于服务层（Service Layer）的两个重要接口和类，它们帮助简化和规范了与数据库交互的业务逻辑。下面是它们的详细介绍：
+
+**IService 接口**
+
+`IService` 是 MyBatis-Plus 提供的一个通用服务接口。它定义了一些常见的 CRUD（Create, Read, Update, Delete）操作，并将这些操作抽象成方法。这意味着，当你使用 `IService` 接口时，你无需自己手动编写这些常见的数据库操作方法。
+
+IService 中的一些常用方法：
+
+- `boolean save(T entity)`: 保存一个实体类对象到数据库。
+- `boolean removeById(Serializable id)`: 根据 ID 删除数据。
+- `boolean updateById(T entity)`: 根据 ID 更新数据。
+- `T getById(Serializable id)`: 根据 ID 查询数据。
+- `List<T> list()`: 查询所有数据。
+- `Page<T> page(Page<T> page)`: 分页查询数据。
+
+**ServiceImpl 类**
+
+`ServiceImpl` 是 MyBatis-Plus 提供的一个基础实现类，它实现了 `IService` 接口中的方法。`ServiceImpl` 通常是被继承的，它提供了具体的数据库操作方法的实现。开发者只需在自己定义的服务实现类中继承 `ServiceImpl` 类，就可以获得默认的 CRUD 功能。
+
+最后看一下效果
+
+```java
+@SpringBootApplication
+public class App {
+    public static void main(String[] args) {
+        ConfigurableApplicationContext context = SpringApplication.run(App.class, args);
+        UserService service = context.getBean(UserServiceImpl.class);
+        List<User> users = service.list();
+        for (User user : users) {
+            System.out.println(user);
+        }
     }
 }
 ```
 
-## MyBatis-Plus
+mybatis-plus 还提供了 **QueryWrapper** 条件构造器，用来提供条件查询
+
+看一个例子
+
+```java
+public class UserService {
+    private UserMapper userMapper; // 注入的 MyBatis-Plus Mapper
+
+    public void example() {
+        QueryWrapper<User> query = new QueryWrapper<>();
+        query.eq("age", 20)          // age = 20
+             .like("name", "张")     // name LIKE '%张%'
+             .orderByDesc("id");    // 按 id 降序排序
+
+        List<User> userList = userMapper.selectList(query);
+        userList.forEach(System.out::println);
+    }
+}
+```
+
+可以看到 `QueryWrapper` 可以当作条件传入给 mapper 方法当参数
+
+**mybatis 和 mybatis-plus 的分页插件**
+
+**MyBatis 原生分页**
+
+使用方式
+
+MyBatis 本身并没有内置分页功能，需要手动写 SQL。典型做法是使用 **`LIMIT` + `OFFSET`（MySQL）** 或者数据库特有的分页语法：
+
+```sql
+<!-- Mapper XML -->
+<select id="selectUserPage" resultType="User">
+  SELECT id, name, age, email
+  FROM user
+  WHERE age &gt; #{minAge}
+  ORDER BY id DESC
+  LIMIT #{offset}, #{pageSize}
+</select>
+```
+
+对应的 Java 调用：
+
+```java
+int page = 1;
+int pageSize = 10;
+int offset = (page - 1) * pageSize;
+
+List<User> users = userMapper.selectUserPage(offset, pageSize, 20);
+```
+
+原理
+
+- 分页逻辑 **完全靠 SQL** 来实现。
+- 开发者必须手动计算 `offset` 和 `limit`。
+- 如果想获取总条数，还需要额外写一个 `SELECT COUNT(*)` 的 SQL。
+- 优点：灵活，任何数据库都可用。
+- 缺点：重复工作多，SQL 可维护性差。
+
+**MyBatis-Plus 分页**
+
+MyBatis-Plus 内置了分页插件（`PaginationInterceptor` 或 `MybatisPlusInterceptor` + `PaginationInnerInterceptor`），分页更加自动化。
+
+使用方式
+
+Mapper 接口
+
+```java
+public void getUserPage() {
+    // 创建分页对象：第1页，每页10条
+    IPage<User> page = new Page<>(1, 10);
+
+    // 执行分页查询
+    IPage<User> userPage = userMapper.selectPage(page, null); // 第二个参数需要传 Wrapper 条件，这里为 null 表示不加条件
+
+    // 获取当前页数据
+    List<User> users = userPage.getRecords();
+    System.out.println("当前页数据：" + users);
+
+    // 获取总条数
+    long total = userPage.getTotal();
+    System.out.println("总条数：" + total);
+
+    // 获取总页数
+    long pages = userPage.getPages();
+    System.out.println("总页数：" + pages);
+}
+```
+
+原理
+
+1. **分页插件拦截 SQL**：
+   - MyBatis-Plus 的分页插件会在 SQL 执行前拦截查询。
+   - 自动改写 SQL，加上数据库对应的分页语法（`LIMIT`/`OFFSET`、`ROWNUM` 等）。
+2. **自动计算总条数**：
+   - 插件会自动生成一个 `COUNT(*)` SQL 查询总条数。
+3. **返回 IPage 对象**：
+   - 包含分页信息：总条数、当前页数据、总页数、每页大小等。
+4. **无需手动拼接 SQL**：
+   - SQL 可以和普通查询一样写，插件负责分页。
+
+优点
+
+- 自动化，减少重复分页 SQL。
+- 与数据库无关（插件内部支持多种数据库）。
+- 支持动态条件（Wrapper）分页。
+- 提供丰富的分页信息（总页数、总条数等）。
+
+虽然 MyBatis 本身不自带分页功能，但可以通过**分页插件**（最常用的是 **PageHelper**）来实现分页。下面展示一下**配置和使用方式**。
+
+**引入依赖**
+
+以 Maven 为例，引入 PageHelper 插件：
+
+```xml
+<dependency>
+    <groupId>com.github.pagehelper</groupId>
+    <artifactId>pagehelper</artifactId>
+    <version>5.4.2</version> <!-- 最新稳定版本 -->
+</dependency>
+```
+
+**配置 MyBatis 插件**
+
+Spring Boot 项目
+
+在 Spring Boot 中，可以直接在 `application.properties` 或 `application.yml` 配置：
+
+```properties
+# PageHelper 配置
+pagehelper.helperDialect=mysql
+pagehelper.reasonable=true
+pagehelper.supportMethodsArguments=true
+pagehelper.params=count=countSql
+```
+
+或者在配置类中注册插件：
+
+```java
+@Configuration
+public class MyBatisConfig {
+
+    @Bean
+    public PageInterceptor pageInterceptor() {
+        PageInterceptor pageInterceptor = new PageInterceptor();
+        Properties properties = new Properties();
+        properties.setProperty("helperDialect", "mysql"); // 数据库方言
+        properties.setProperty("reasonable", "true");      // 页码合理化
+        properties.setProperty("supportMethodsArguments", "true"); // 支持方法参数
+        pageInterceptor.setProperties(properties);
+        return pageInterceptor;
+    }
+
+    @Bean
+    public SqlSessionFactory sqlSessionFactory(DataSource dataSource, PageInterceptor pageInterceptor) throws Exception {
+        SqlSessionFactoryBean sessionFactory = new SqlSessionFactoryBean();
+        sessionFactory.setDataSource(dataSource);
+        sessionFactory.setPlugins(pageInterceptor); // 注册分页插件
+        return sessionFactory.getObject();
+    }
+}
+```
+
+原理
+
+- PageHelper 是一个 **MyBatis 拦截器插件（Interceptor）**。
+- 在执行 SQL 前，它会拦截查询，并修改 SQL，加上 `LIMIT` 或数据库对应的分页语法。
+- 同时，它会自动执行 `SELECT COUNT(*)` 查询总条数。
+- 拦截器通过 `Properties` 配置不同数据库方言、合理化页码等功能。
+
+**使用方式**
+
+```java
+public List<User> getUserPage(int pageNum, int pageSize) {
+    // 开始分页
+    PageHelper.startPage(pageNum, pageSize);
+
+    // 执行查询
+    List<User> users = userMapper.selectAll();
+
+    // 包装分页结果
+    PageInfo<User> pageInfo = new PageInfo<>(users);
+    System.out.println("总条数：" + pageInfo.getTotal());
+    System.out.println("总页数：" + pageInfo.getPages());
+    System.out.println("当前页数据：" + pageInfo.getList());
+    
+    return pageInfo.getList();
+}
+```
+
+注意：`PageHelper.startPage()` 必须紧跟查询语句，否则分页无效。
+
+mybatis-plus 还提供像代码生成器这样的功能，等用到再说
