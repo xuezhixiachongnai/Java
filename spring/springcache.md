@@ -1,14 +1,14 @@
 # Spring Cache
 
-## 概述
+Spring Cache 是 Spring 提供的一整套的缓存解决方案，它不是具体的缓存实现，它只提供一整套的接口和代码规范、配置、注解等，用于整合各种缓存方案，比如Caffeine、Guava Cache、Ehcache
 
-spring的缓存不是一种具体的缓存实现方案，它底层需要依赖EhCache、Guava等具体的缓存工具
+Spring Cache 并不是缓存的实现，而是缓存使用的一种方式，其基于注解和 Spring 高级特性提供缓存读写以及失效刷新等各种能力
 
-## 配置
+Spring Cache 的实现
 
-- 继承`CachingConfigurerSupport`类，实现需要重写的方法（spring版本6以后已弃用）
-- 实现`CachingConfigurer`接口，重写接口的所有方法
-- 直接声明bean
+**`Cache`** 接口包含缓存的常用操作：增加、删除、读取等。
+
+**`CacheManager`** 是 Spring 各种缓存的抽象接口
 
 ## 使用
 
