@@ -180,3 +180,15 @@ public MessageHandler outbound(MqttPahoClientFactory mqttClientFactory) {
 [](https://blog.csdn.net/weixin_55344375/article/details/146569230?ops_request_misc=elastic_search_misc&request_id=1ef3fd4b95370adcf4d0710abfce52ed&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduend~default-2-146569230-null-null.142^v102^pc_search_result_base3&utm_term=Spring%20Integration&spm=1018.2226.3001.4187)
 
 [](https://www.tony-bro.com/posts/1578338213/index.html)
+
+`@MessageEndpoint` 是 Spring Integration 提供的一个**组件标识注解**，用于表明某个类是一个**消息端点（Message Endpoint）**。
+
+它的作用类似于：
+
+- `@Component`（用于标识普通 Bean）
+- `@Controller`（用于标识 Web 控制器）
+- `@Service`（用于标识业务逻辑组件）
+
+换句话说，`@MessageEndpoint` 表示：
+
+> 这是一个专门用于**接收、处理或发送消息**的 Spring Bean。

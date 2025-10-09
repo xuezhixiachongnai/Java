@@ -1,4 +1,4 @@
-# Cannal
+# [Cannal](https://www.cnblogs.com/throwable/p/13776819.html)
 
 ### Canal 是什么
 
@@ -12,7 +12,7 @@
 
 **模拟 MySQL 从库（Slave）**
 
->  MySQL 主从复制的原理：主库写 binlog，从库通过 **dump 协议**拉取 binlog。
+>  MySQL 主从复制的原理：主库写 binlog，从库通过 **dump 协议** 拉取 binlog。
 
 Canal 伪装成 MySQL 的一个从库，**订阅 binlog**。拿到 binlog 日志后，**解析**出行级别的变更信息（insert/update/delete）。
 
@@ -628,3 +628,362 @@ esMapping:
 MySQL → Canal Server → Canal Adapter(ES) → Elasticsearch
 ```
 
+##### 既然 canal 提供了直接将增量消息传递给 elasticsearch 的 adapter，那为什么再一些项目中还需要引入 mq 插件来做中转站。
+
+接下来我们以一个电商项目为例
+
+**电商项目中，不直接用 Canal → Elasticsearch，而是用 Canal → MQ → 消费端 → Elasticsearch**。原因并不是 Elasticsearch 消息适配器本身有致命问题，而是涉及到 **可靠性、解耦、伸缩性和容错**
+
+##### 直接 Canal → Elasticsearch 的问题
+
+Canal 有官方的 Adapter 可以把 binlog 增量同步到 Elasticsearch，例如 canal-adapter 提供了 ES Sink。
+
+但是 **缺点** 比较明显：
+
+1. **可靠性差**
+   - Canal Adapter 是单机或单点执行的，如果同步失败（ES 临时不可用、网络异常），消息可能丢失。
+   - ES Sink 不是事务型的，没办法保证数据库提交成功的同时 ES 也成功。
+   - 如果直接写 ES，失败重试逻辑较复杂，需要自己管理批量重试、死信队列等。
+2. **扩展性受限**
+   - Canal-adapter 内部是单线程或者线程池模式，写 ES 高峰可能导致阻塞。
+   - 对于电商项目，SKU、订单、商品库数据量巨大，直接 Canal → ES 很难做横向扩展。
+   - MQ 作为中间件可以天然做流量削峰、分组订阅、多消费者并行处理。
+3. **解耦性差**
+   - 如果 Canal Adapter 直接写 ES，那么 Adapter 就必须知道业务 ES 结构（索引、mapping、BO 映射规则），耦合度高。
+   - 如果业务逻辑需要修改索引结构、增加字段、修改转换规则，直接 Adapter 改动很麻烦。
+4. **监控和补偿复杂**
+   - MQ 可以天然保存消息（支持延迟、重试、死信队列），方便统计消费情况和补偿策略。
+   - 直接 Adapter 写 ES，失败后只能依靠日志或人工修复，不方便做全量补偿。
+5. **顺序与幂等处理复杂**
+   - ES 更新是幂等操作（upsert）更安全。如果直接 Adapter 写 ES，需要自己保证顺序，否则可能覆盖旧数据。
+   - MQ + 消费端可以控制分区、消费顺序、批量更新，保证幂等和顺序。
+
+使用 mq 之后
+
+1. **解耦 Canal 与业务**
+   - Canal 只负责把数据库增量消息发布到 MQ，不需要关心 ES 索引结构和业务逻辑。
+   - 消费端根据业务需要去处理消息，比如不同的 Processor 处理 brand/spu/sku 等。
+2. **高可用与可靠性**
+   - MQ 提供消息持久化、重试、死信队列，避免消息丢失。
+   - 消费端可以并发处理、批量写 ES，提高吞吐。
+3. **削峰与弹性伸缩**
+   - 高峰期数据库产生大量变更，MQ 可以做缓冲，消费者按自身消费能力处理。
+   - 可以增加消费者实例，提高消费能力，而不影响 Canal 端。
+4. **支持多业务订阅**
+   - 同一条增量消息，可以被多个消费者处理，支持不同业务场景（搜索、推荐、缓存更新等）。
+
+Elasticsearch Adapter 本身的局限性
+
+- Canal-adapter 的 ES Sink 本质上是一个**轻量级插件**，不是专门为高并发、高可用、幂等处理设计。
+- 对于生产级电商：
+  - 大量 SKU/订单数据，高峰期可能直接 Adapter 写 ES 失败；
+  - Adapter 没有天然消息重试机制，失败后可能丢消息；
+  - Adapter 和业务逻辑耦合高，维护成本大。
+- 因此实际生产中，大多改成 **Canal → MQ → Spring Boot 消费 → ES**。
+
+接下来大致实现一下这个方案
+
+```markdown
+MySQL (启用 binlog)
+    ↓ (binlog)
+Canal Server (解析 binlog)
+    ↓ (Canal-Adapter 推送消息)
+RocketMQ Broker (topic: canal_topic)
+    ↓ (消费者)
+Spring Boot 应用 (RocketMQ listener)
+    - CanalGlue 解析 JSON -> 找到对应 Processor
+    - Processor 将变化映射为业务 BO（BrandBO/SpuBO/...）
+    - ProductUpdateManager 使用 RestHighLevelClient 批量 update / upsert ES index
+Elasticsearch (存储搜索索引)
+```
+
+消息体（CanalAdapter 推送到 RocketMQ）示例 JSON
+
+```json
+{
+  "database": "mall_product",
+  "table": "brand",
+  "type": "UPDATE", // INSERT|UPDATE|DELETE
+  "isDdl": false,
+  "data": [ { "brand_id": 1, "name": "new", "img_url":"..." } ],
+  "old": [ { "name": "old" } ],
+  "pkNames": ["brand_id"],
+  "sql": "update brand set name=... where brand_id=1"
+}
+```
+
+跳过 canal 配置文件，直接进入 Spring Boot
+
+```xml
+<dependencies>
+  <!-- Spring Boot -->
+  <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter</artifactId></dependency>
+
+  <!-- RocketMQ Spring Boot -->
+  <dependency>
+    <groupId>org.apache.rocketmq</groupId>
+    <artifactId>rocketmq-spring-boot-starter</artifactId>
+    <version>2.2.0</version>
+  </dependency>
+
+  <!-- Elasticsearch Rest High Level Client -->
+  <dependency>
+    <groupId>org.elasticsearch.client</groupId>
+    <artifactId>elasticsearch-rest-high-level-client</artifactId>
+    <version>7.17.0</version>
+  </dependency>
+
+  <!-- Fastjson (json parse) -->
+  <dependency><groupId>com.alibaba</groupId><artifactId>fastjson</artifactId><version>1.2.83</version></dependency>
+
+  <!-- lombok -->
+  <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
+</dependencies>
+```
+
+application.yml
+
+```yaml
+spring:
+  application:
+    name: canal-consumer
+rocketmq:
+  name-server: 127.0.0.1:9876
+  consumer:
+    message-model: BROADCASTING
+
+es:
+  host: localhost
+  port: 9200
+  index: product_index
+```
+
+定义一个 Java Bean 用于反序列化消息
+
+```java
+@Data
+public class CanalBinLogEvent {
+    private String database;
+    private String table;
+    private String type; // INSERT|UPDATE|DELETE
+    private Boolean isDdl;
+    private List<Map<String,Object>> data;
+    private List<Map<String,Object>> old;
+    private List<String> pkNames;
+    private String sql;
+}
+```
+
+注册一个 RocketMQ Listener，接收 MQ 消息并交给 CanalGlue
+
+```java
+@Component
+@RocketMQMessageListener(topic = "canal_topic", consumerGroup = "canal_consumer_group")
+public class CanalListener implements RocketMQListener<String> {
+
+    private static final Logger log = LoggerFactory.getLogger(CanalListener.class);
+
+    @Autowired
+    private CanalGlue canalGlue;
+
+    @Override
+    public void onMessage(String message) {
+        log.info("received canal mq message: {}", message);
+        try {
+            canalGlue.process(message);
+        } catch (Exception e) {
+            log.error("process canal message error", e);
+            // 生产环境中可视情况重试/记录死信队列
+        }
+    }
+}
+```
+
+定义一个解析并分发给对应表的 processors
+
+```java
+@Component
+public class CanalGlue {
+
+    private final Map<String, BaseCanalBinlogEventProcessor<?>> processorMap = new ConcurrentHashMap<>();
+
+    // 注册 processor，key 形如 database.table
+    public void registerProcessor(String database, String table, BaseCanalBinlogEventProcessor<?> processor) {
+        processorMap.put(database + "." + table, processor);
+    }
+
+    public void process(String message) {
+        CanalBinLogEvent event = JSON.parseObject(message, CanalBinLogEvent.class);
+        String key = event.getDatabase() + "." + event.getTable();
+        BaseCanalBinlogEventProcessor<?> processor = processorMap.get(key);
+        if (processor == null) {
+            // 没有注册 processor，则忽略或记录
+            return;
+        }
+        processor.process(event);
+    }
+}
+```
+
+抽象处理器 BaseCanalBinlogEventProcessor
+
+```java
+public abstract class BaseCanalBinlogEventProcessor<T> {
+
+    protected final Logger log = LoggerFactory.getLogger(getClass());
+
+    // 子类在构造后调用 init 注册（或使用@PostConstruct）
+    public void process(CanalBinLogEvent event) {
+        String type = event.getType(); // INSERT/UPDATE/DELETE
+        if ("INSERT".equalsIgnoreCase(type)) {
+            if (event.getData() != null) {
+                for (Map<String,Object> row : event.getData()) {
+                    T after = mapToEntity(row);
+                    processInsert(after);
+                }
+            }
+        } else if ("UPDATE".equalsIgnoreCase(type)) {
+            int size = event.getData() == null ? 0 : event.getData().size();
+            for (int i = 0; i < size; i++) {
+                Map<String,Object> afterMap = event.getData().get(i);
+                Map<String,Object> beforeMap = (event.getOld() != null && event.getOld().size() > i) ? event.getOld().get(i) : null;
+                T after = mapToEntity(afterMap);
+                T before = beforeMap == null ? null : mapToEntity(beforeMap);
+                processUpdate(before, after);
+            }
+        } else if ("DELETE".equalsIgnoreCase(type)) {
+            if (event.getData() != null) {
+                for (Map<String,Object> row : event.getData()) {
+                    T before = mapToEntity(row);
+                    processDelete(before);
+                }
+            }
+        }
+    }
+
+    protected abstract T mapToEntity(Map<String,Object> data);
+    protected void processInsert(T after) {}
+    protected void processUpdate(T before, T after) {}
+    protected void processDelete(T before) {}
+}
+```
+
+ProductUpdateManager 更新 ES 的实现
+
+```java
+@Component
+public class ProductUpdateManager {
+
+    private static final Logger log = LoggerFactory.getLogger(ProductUpdateManager.class);
+
+    @Autowired
+    private RestHighLevelClient restHighLevelClient;
+
+    @Value("${es.index:product_index}")
+    private String index;
+
+    public void esUpdateSpuBySpuIds(List<Long> spuIds, Object esProductBO) {
+        if (spuIds == null || spuIds.isEmpty()) return;
+
+        try {
+            BulkRequest bulk = new BulkRequest();
+            String json = JSON.toJSONString(esProductBO);
+            for (Long id : spuIds) {
+                // upsert: 如果不存在则 create（通过 doc_as_upsert）
+                UpdateRequest ur = new UpdateRequest(index, String.valueOf(id))
+                        .doc(json, XContentType.JSON)
+                        .docAsUpsert(true);
+                bulk.add(ur);
+            }
+            BulkResponse resp = restHighLevelClient.bulk(bulk, RequestOptions.DEFAULT);
+            if (resp.hasFailures()) {
+                log.error("es bulk has failures: {}", resp.buildFailureMessage());
+            }
+        } catch (Exception e) {
+            log.error("es update exception", e);
+            throw new RuntimeException(e);
+        }
+    }
+}
+
+```
+
+并提供 `RestHighLevelClient` Bean：
+
+```java
+@Configuration
+public class EsConfig {
+    @Value("${es.host:localhost}")
+    private String host;
+    @Value("${es.port:9200}")
+    private int port;
+
+    @Bean(destroyMethod = "close")
+    public RestHighLevelClient restHighLevelClient() {
+        RestClientBuilder builder = RestClient.builder(new HttpHost(host, port, "http"));
+        return new RestHighLevelClient(builder);
+    }
+}
+```
+
+示例 Processor：BrandProcessor 监听 brand 表
+
+```java
+@Component
+public class BrandProcessor extends BaseCanalBinlogEventProcessor<BrandBO> {
+
+    @Autowired
+    private ProductUpdateManager productUpdateManager;
+    @Autowired
+    private ProductFeignClient productFeignClient; // 假设存在，查询 spuId 列表
+
+    @PostConstruct
+    public void init() {
+        // 注册到 glue（database=mall_product, table=brand）
+        // 通过构造注入 canalGlue 或从 SpringContextUtils 取得
+    }
+
+    @Override
+    protected BrandBO mapToEntity(Map<String, Object> data) {
+        BrandBO bo = new BrandBO();
+        if (data.get("brand_id") != null) bo.setBrandId(Long.valueOf(data.get("brand_id").toString()));
+        bo.setName((String) data.get("name"));
+        bo.setImgUrl((String) data.get("img_url"));
+        return bo;
+    }
+
+    @Override
+    protected void processUpdate(BrandBO before, BrandBO after) {
+        boolean needUpdate = false;
+        EsProductBO esProductBO = new EsProductBO();
+        if (before != null && !Objects.equals(before.getName(), after.getName())) {
+            esProductBO.setBrandName(after.getName());
+            needUpdate = true;
+        }
+        if (before != null && !Objects.equals(before.getImgUrl(), after.getImgUrl())) {
+            esProductBO.setBrandImg(after.getImgUrl());
+            needUpdate = true;
+        }
+        if (needUpdate) {
+            List<Long> spuIds = productFeignClient.getSpuIdsByBrandId(after.getBrandId()).getData();
+            productUpdateManager.esUpdateSpuBySpuIds(spuIds, esProductBO);
+        }
+    }
+}
+```
+
+> 说明：`BrandBO` / `EsProductBO` / `ProductFeignClient` 是业务相关类，需按项目定义。`BrandProcessor` 在 `@PostConstruct` 或构造时把自己注册到 `CanalGlue.registerProcessor("mall_product","brand", this)`。
+
+首先 canal 接收到的增量数据消息会被发送给 mq，mq 中会直接调用 CanalGlue 来处理增量数据
+
+`CanalGlue` 是如何处理增量数据呢
+
+我们看这个类可以发现，里面维护着一个 Map 数据结构，该数据结构是以 数据库 + 表名 作为 key，对应的 value 是处理相应表的处理器。这个类中有一个方法 `process` 方法，该方法首先将 mq 传来的 json 消息转换成自定义的 `CanalBinLogEvent` Java Bean，然后通过获取 数据库 + 表名 拼接成 key 得到相应的 处理器实例 来调用其 `process` 方法进行真正的数据解析处理
+
+`BaseCanalBinlogEventProcessor` 是处理器的抽象类，它定义了一个处理器的骨架，我们只需要根据相应的数据库表结构定制对应的 处理器类就可以了
+
+接着往下看的化，我们封装了一个 elasticsearch 的 CRUD 类 `ProductUpdateManager`，用来真正进行和 elasticsearch 的交互。
+
+最终，我们自己继承 `BaseCanalBinlogEventProcessor` 抽象类，真正实现一个处理器类 `BrandProcessor`，该类的主要逻辑就是实现消息到 Java Bean 类的具体解析，然后调用相应的 elasticsearch CRUD 方法完成增量数据的更新。
+
+将该类注册到 `CanalGlue` 中，当 mq 收到对应表的消息就会调用该类处理

@@ -1,5 +1,10 @@
 # [Sentinel](https://www.cnblogs.com/crazymakercircle/p/14285001.html)
 
+**Sentinel 的使用可以分为两个部分:**
+
+- 控制台（Dashboard）：控制台主要负责管理推送规则、监控、集群限流分配管理、机器发现等。
+- 核心库（Java 客户端）：不依赖任何框架/库，能够运行于 Java 7 及以上的版本的运行时环境，同时对 Dubbo / Spring Cloud 等框架也有较好的支持。
+
 ## 概念
 
 提供了流量控制、熔断降级、系统负载保护等多个维度来保障服务之间的稳定性
